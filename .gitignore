@@ -1,0 +1,25 @@
+# Build
+/target
+**/*.rs.bk
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Éditeurs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Environnement
+.env
+.env.*
+
+# Logs
+*.log
+
+# Fichiers de config locaux
+orbis.toml.local
+
