@@ -1,0 +1,16 @@
+[package]
+name = "orbis-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "orbis"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+rustyline.workspace = true
+tracing-subscriber.workspace = true
+orbis-core = { path = "../shell-core" }
+home.workspace = true
