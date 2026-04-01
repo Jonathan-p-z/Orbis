@@ -26,14 +26,14 @@ mod imp {
     use crate::builtins::{try_run_builtin, BuiltinResult};
     use anyhow::{bail, Context};
     use nix::{
-        fcntl::{open, OFlag},
+        fcntl::{fcntl, open, FcntlArg, FdFlag, OFlag},
         libc,
         sys::{
             signal::{signal, SigHandler, Signal},
             stat::Mode,
             wait::{waitpid, WaitStatus},
         },
-        unistd::{dup2, execvp, fork, getpgrp, pipe, setpgid, tcsetpgrp, ForkResult, Pid},
+        unistd::{dup2, execvp, fork, getpgrp, pipe2, setpgid, tcsetpgrp, ForkResult, Pid},
     };
     use std::os::fd::BorrowedFd;
     use std::ffi::CString;
@@ -72,7 +72,7 @@ mod imp {
             for (idx, cmd) in pl.cmds.iter().enumerate() {
                 let is_last = idx == pl.cmds.len() - 1;
                 let (r, w): (Option<OwnedFd>, Option<OwnedFd>) = if !is_last {
-                    let (r, w) = pipe()?;
+                    let (r, w) = pipe2(OFlag::O_CLOEXEC)?;
                     (Some(r), Some(w))
                 } else {
                     (None, None)
@@ -95,6 +95,10 @@ mod imp {
 
                         // OwnedFd drops here, closing the fd before exec
                         apply_redirects(cmd)?;
+
+                        // set CLOEXEC on all fds > 2 so rustyline sockets and pipe
+                        // ends are not inherited by the child after execvp
+                        cloexec_extra_fds();
 
                         // replace the process image
                         if cmd.argv.is_empty() {
@@ -123,7 +127,7 @@ mod imp {
             }
 
             if pl.background {
-                let id = self.jobs.add(pgid.context("pgid absent")?, cmdline);
+                let id = self.jobs.add(pgid.context("pgid absent")?, pids.clone(), cmdline);
                 println!("[{id}] {}", pgid.unwrap());
                 Ok(0)
             } else {
@@ -163,6 +167,22 @@ mod imp {
 
                 Ok(last_code)
             }
+        }
+    }
+
+    /// Set O_CLOEXEC on every fd > 2 in the child process so that rustyline
+    /// sockets and pipe ends are closed automatically after execvp.
+    fn cloexec_extra_fds() {
+        let fds: Vec<i32> = match std::fs::read_dir("/proc/self/fd") {
+            Ok(entries) => entries
+                .filter_map(|e| e.ok())
+                .filter_map(|e| e.file_name().to_str().and_then(|s| s.parse::<i32>().ok()))
+                .filter(|&fd| fd > 2)
+                .collect(),
+            Err(_) => return,
+        };
+        for fd in fds {
+            let _ = fcntl(fd, FcntlArg::F_SETFD(FdFlag::FD_CLOEXEC));
         }
     }
 
@@ -512,7 +532,7 @@ impl Shell {
 
         if background {
             let pid = Pid::from_raw(child.id() as i32);
-            let _id = self.jobs.add(pid, line.to_string());
+            let _id = self.jobs.add(pid, vec![pid], line.to_string());
             return Ok(0);
         }
 

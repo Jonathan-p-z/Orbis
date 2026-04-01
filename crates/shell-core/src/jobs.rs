@@ -5,7 +5,7 @@
 
 #[cfg(unix)]
 mod imp {
-    use anyhow::{bail, Context};
+    use anyhow::Context;
     use nix::{
         libc,
         sys::{
@@ -20,6 +20,7 @@ mod imp {
     pub struct JobInfo {
         pub id: u32,
         pub pgid: Pid,
+        pub pids: Vec<Pid>,
         pub cmdline: String,
         pub status: String,
     }
@@ -42,10 +43,10 @@ mod imp {
             self.shell_pgid = Some(nix::unistd::getpgrp());
         }
 
-        pub fn add(&mut self, pgid: Pid, cmdline: String) -> u32 {
+        pub fn add(&mut self, pgid: Pid, pids: Vec<Pid>, cmdline: String) -> u32 {
             self.next_id += 1;
             let id = self.next_id;
-            self.jobs.insert(id, JobInfo { id, pgid, cmdline, status: "Running".into() });
+            self.jobs.insert(id, JobInfo { id, pgid, pids, cmdline, status: "Running".into() });
             id
         }
 
@@ -66,20 +67,21 @@ mod imp {
         pub fn reap_nonblocking(&mut self) {
             let mut done = Vec::new();
             for (id, j) in self.jobs.iter_mut() {
-                match waitpid(Pid::from_raw(-j.pgid.as_raw()), Some(WaitPidFlag::WNOHANG)) {
-                    Ok(WaitStatus::Exited(_, code)) => {
-                        j.status = format!("Done({})", code);
-                        done.push(*id);
+                // Check each child pid individually — waitpid(-pgid, WNOHANG) can
+                // return ECHILD if setpgid raced with execvp, silently dropping live
+                // jobs. Direct pid-based waitpid is reliable because these are our
+                // direct children.
+                let all_done = !j.pids.is_empty() && j.pids.iter().all(|&pid| {
+                    match waitpid(pid, Some(WaitPidFlag::WNOHANG)) {
+                        Ok(WaitStatus::Exited(_, _)) | Ok(WaitStatus::Signaled(_, _, _)) => true,
+                        Ok(WaitStatus::StillAlive) | Ok(_) => false,
+                        // ECHILD = already reaped; other errors = treat as done
+                        Err(_) => true,
                     }
-                    Ok(WaitStatus::Signaled(_, sig, _)) => {
-                        j.status = format!("Killed({})", sig);
-                        done.push(*id);
-                    }
-                    Ok(WaitStatus::StillAlive) | Ok(_) => {}
-                    Err(_) => {
-                        j.status = "Unknown".into();
-                        done.push(*id);
-                    }
+                });
+                if all_done {
+                    j.status = "Done".into();
+                    done.push(*id);
                 }
             }
             for id in done {
@@ -107,11 +109,14 @@ mod imp {
             tcsetpgrp(tty, j.pgid)?;
             killpg(j.pgid, Signal::SIGCONT)?;
 
-            loop {
-                match waitpid(Pid::from_raw(-j.pgid.as_raw()), None) {
-                    Ok(WaitStatus::Exited(_, _)) | Ok(WaitStatus::Signaled(_, _, _)) => break,
-                    Ok(_) => continue,
-                    Err(e) => bail!("waitpid: {e}"),
+            // wait for each child pid individually — more reliable than -pgid
+            for &pid in &j.pids {
+                loop {
+                    match waitpid(pid, None) {
+                        Ok(WaitStatus::Exited(_, _)) | Ok(WaitStatus::Signaled(_, _, _)) => break,
+                        Ok(_) => continue,
+                        Err(_) => break, // ECHILD: already reaped
+                    }
                 }
             }
 
