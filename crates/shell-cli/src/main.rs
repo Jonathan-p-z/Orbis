@@ -12,14 +12,12 @@ use std::{borrow::Cow, env, fs, path::{Path, PathBuf}};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
-// ─── Known builtins ───────────────────────────────────────────────────────────
 const BUILTINS: &[&str] = &[
     "cd", "cs", "exit", "export", "unset", "jobs", "fg", "bg",
     "pwd", "echo", "clear", "env", "which", "type",
     "alias", "unalias", "help", "true", "false",
 ];
 
-// orbisbox commands we want in completion
 const ORBISBOX_CMDS: &[&str] = &[
     "ls", "cat", "cp", "mv", "rm", "mkdir", "rmdir", "touch", "ln",
     "chmod", "stat", "du", "df", "find",
@@ -29,8 +27,6 @@ const ORBISBOX_CMDS: &[&str] = &[
     "env", "id", "ps", "kill",
     "basename", "dirname", "realpath",
 ];
-
-// ─── Completer ────────────────────────────────────────────────────────────────
 
 struct OrbisHelper {
     commands: Vec<String>,
@@ -45,12 +41,9 @@ impl OrbisHelper {
         }
     }
 
-    /// Complete a file/dir path from what the user typed so far.
-    /// If dirs_only is set, skip regular files.
     fn complete_path(&self, word: &str, dirs_only: bool) -> Vec<String> {
         let home = env::var("HOME").unwrap_or_default();
 
-        // expand ~ to the real home path
         let expanded: String = if word == "~" {
             home.clone()
         } else if word.starts_with("~/") {
@@ -59,7 +52,6 @@ impl OrbisHelper {
             word.to_string()
         };
 
-        // split into parent dir + filename prefix for the readdir search
         let (search_dir, name_prefix, path_prefix) = if expanded.contains('/') {
             let p = Path::new(&expanded);
             let dir = p.parent().unwrap_or(Path::new(".")).to_path_buf();
@@ -98,11 +90,9 @@ impl OrbisHelper {
                 continue;
             }
 
-            // rebuild the path the way the user typed it
             let suffix = if is_dir { "/" } else { "" };
             let full = format!("{}{}{}", path_prefix, name, suffix);
 
-            // keep the ~ prefix if the user started with ~/
             let display = if word.starts_with("~/") || word == "~" {
                 let absolute = search_dir.join(&name);
                 let abs_str = absolute.to_string_lossy();
@@ -134,14 +124,12 @@ impl Completer for OrbisHelper {
     ) -> RlResult<(usize, Vec<Pair>)> {
         let before_cursor = &line[..pos];
 
-        // find where the current word starts, stopping at shell separators
         let word_start = before_cursor
             .rfind(|c: char| matches!(c, ' ' | '\t' | '|' | '>' | '<' | '&' | ';'))
             .map(|i| i + 1)
             .unwrap_or(0);
         let word = &before_cursor[word_start..];
 
-        // are we completing the command name or an argument?
         let before_word = before_cursor[..word_start].trim();
         let is_command = before_word.is_empty()
             || before_word.ends_with('|')
@@ -149,7 +137,6 @@ impl Completer for OrbisHelper {
             || before_word.ends_with("&&")
             || before_word.ends_with("||");
 
-        // previous word tells us context: cd/cs/mkdir → dirs only
         let prev_word = before_cursor[..word_start]
             .split_whitespace()
             .last()
@@ -161,14 +148,12 @@ impl Completer for OrbisHelper {
             && !word.starts_with('/')
             && !word.starts_with('~')
         {
-            // completing the command name
             self.commands
                 .iter()
                 .filter(|c| c.starts_with(word))
                 .cloned()
                 .collect()
         } else {
-            // completing a path argument
             self.complete_path(word, dirs_only)
         };
 
@@ -185,7 +170,6 @@ impl Hinter for OrbisHelper {
     type Hint = String;
 
     fn hint(&self, line: &str, pos: usize, ctx: &rustyline::Context<'_>) -> Option<String> {
-        // grey history hint, only when cursor is at end of line
         if pos < line.len() {
             return None;
         }
@@ -194,7 +178,6 @@ impl Hinter for OrbisHelper {
 }
 
 impl Highlighter for OrbisHelper {
-    /// Highlight the command: cyan/bold if recognized, yellow if unknown
     fn highlight<'l>(&self, line: &'l str, _pos: usize) -> Cow<'l, str> {
         if line.trim().is_empty() {
             return Cow::Borrowed(line);
@@ -215,7 +198,6 @@ impl Highlighter for OrbisHelper {
         }
     }
 
-    /// History hint, dimmed so it doesn't compete with the typed text
     fn highlight_hint<'h>(&self, hint: &'h str) -> Cow<'h, str> {
         Cow::Owned(format!("\x1b[38;5;240m{}\x1b[0m", hint))
     }
@@ -232,8 +214,6 @@ impl Validator for OrbisHelper {
 }
 
 impl Helper for OrbisHelper {}
-
-// ─── Collect available commands from PATH ────────────────────────────────────
 
 fn collect_commands() -> Vec<String> {
     let mut cmds: Vec<String> = BUILTINS
@@ -269,8 +249,6 @@ fn collect_commands() -> Vec<String> {
     cmds
 }
 
-// ─── Entry point ─────────────────────────────────────────────────────────────
-
 fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
@@ -288,11 +266,11 @@ fn main() -> anyhow::Result<()> {
                 println!("Usage: orbis [OPTIONS] [SCRIPT]");
                 println!();
                 println!("Options:");
-                println!("  -h, --help       Show this help");
-                println!("  -V, --version    Show version");
+                println!("  -h, --help       Affiche cette aide");
+                println!("  -V, --version    Affiche la version");
                 println!();
                 println!("Arguments:");
-                println!("  SCRIPT           Script file to run");
+                println!("  SCRIPT           Fichier de script à exécuter");
                 return Ok(());
             }
             _ => {}
@@ -307,8 +285,6 @@ fn main() -> anyhow::Result<()> {
 
     run_interactive(&mut shell)
 }
-
-// ─── Interactive mode ─────────────────────────────────────────────────────────
 
 fn run_interactive(shell: &mut Shell) -> anyhow::Result<()> {
     let history_path = history_file();
@@ -334,7 +310,6 @@ fn run_interactive(shell: &mut Shell) -> anyhow::Result<()> {
     loop {
         shell.jobs.reap_nonblocking();
 
-        // reap finished background jobs before drawing the prompt
         let prompt = build_prompt(&shell.env.cwd.display().to_string(), last_exit);
 
         match rl.readline(&prompt) {
@@ -367,7 +342,7 @@ fn run_interactive(shell: &mut Shell) -> anyhow::Result<()> {
                 continue;
             }
             Err(rustyline::error::ReadlineError::Eof) => break,
-            Err(e) => return Err(e).context("readline error"),
+            Err(e) => return Err(e).context("erreur readline"),
         }
     }
 
@@ -378,11 +353,9 @@ fn run_interactive(shell: &mut Shell) -> anyhow::Result<()> {
     Ok(())
 }
 
-// ─── Script mode ─────────────────────────────────────────────────────────────
-
 fn run_script(shell: &mut Shell, path: &str) -> anyhow::Result<()> {
     let content =
-        fs::read_to_string(path).with_context(|| format!("could not read script: {path}"))?;
+        fs::read_to_string(path).with_context(|| format!("lecture script: {path}"))?;
 
     for (lineno, line) in content.lines().enumerate() {
         let trimmed = line.trim();
@@ -402,8 +375,6 @@ fn run_script(shell: &mut Shell, path: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-// ─── Prompt ───────────────────────────────────────────────────────────────────
-
 fn build_prompt(cwd: &str, last_exit: i32) -> String {
     let color = if last_exit == 0 { "\x1b[32m" } else { "\x1b[31m" };
     let reset = "\x1b[0m";
@@ -419,8 +390,6 @@ fn build_prompt(cwd: &str, last_exit: i32) -> String {
 
     format!("{bold}{cyan}orbis{reset}:{color}{display_cwd}{reset}{bold}${reset} ")
 }
-
-// ─── History file ─────────────────────────────────────────────────────────────
 
 fn history_file() -> Option<PathBuf> {
     let base = home::home_dir()?;
