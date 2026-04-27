@@ -12,7 +12,6 @@ use std::{
 #[cfg(unix)]
 use std::os::unix::fs::MetadataExt;
 
-// ─── ANSI ─────────────────────────────────────────────────────────────────────
 const RESET: &str = "\x1b[0m";
 const BOLD: &str = "\x1b[1m";
 const BLUE: &str = "\x1b[34m";
@@ -21,7 +20,6 @@ const GREEN: &str = "\x1b[32m";
 const RED: &str = "\x1b[31m";
 const RED_BOLD: &str = "\x1b[1;31m";
 
-// ─── MAIN ─────────────────────────────────────────────────────────────────────
 fn main() {
     // restore SIGPIPE default so we exit quietly when piped to head, less, etc.
     #[cfg(unix)]
@@ -118,15 +116,11 @@ fn usage() {
     println!("{BOLD}Path:{RESET}     basename dirname realpath true false");
 }
 
-// ─── FLAG PARSER ──────────────────────────────────────────────────────────────
-/// Returns (flags_set, positional_args, named_values)
-/// flags_set: set of single-char flags that were present
-/// named_values: map of flag-char → value (for -n 5, -t ',', etc.)
-/// Also handles --long-flag and --long=value
+
 fn parse_flags(
     args: &[String],
-    short_flags: &str,       // flags that take no value, e.g. "rlhasSFd1vnAbiufpRvq"
-    short_valued: &str,      // flags that take a value, e.g. "ntkdofe"
+    short_flags: &str,
+    short_valued: &str,
 ) -> (std::collections::HashSet<char>, HashMap<char, String>, Vec<String>, HashMap<String, String>) {
     let mut flags: std::collections::HashSet<char> = std::collections::HashSet::new();
     let mut values: HashMap<char, String> = HashMap::new();
@@ -163,7 +157,6 @@ fn parse_flags(
             while j < chars.len() {
                 let c = chars[j];
                 if short_valued.contains(c) {
-                    // value is rest of token or next arg
                     if j + 1 < chars.len() {
                         values.insert(c, chars[j+1..].iter().collect());
                         break;
@@ -187,7 +180,6 @@ fn parse_flags(
     (flags, values, positional, long_values)
 }
 
-// ─── UTILITIES ────────────────────────────────────────────────────────────────
 fn find_in_path(name: &str) -> Vec<PathBuf> {
     let path_var = env::var("PATH").unwrap_or_default();
     let mut results = Vec::new();
@@ -220,7 +212,6 @@ fn guard_root(p: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Simple glob: * matches any sequence (not /), ** matches across /, ? matches one char
 fn glob_match(pattern: &str, s: &str) -> bool {
     glob_match_inner(pattern.as_bytes(), s.as_bytes())
 }
@@ -230,7 +221,6 @@ fn glob_match_inner(p: &[u8], s: &[u8]) -> bool {
         (None, None) => true,
         (Some(b'*'), _) => {
             if p.len() >= 2 && p[1] == b'*' {
-                // ** matches across /
                 for i in 0..=s.len() {
                     if glob_match_inner(&p[2..], &s[i..]) {
                         return true;
@@ -249,7 +239,6 @@ fn glob_match_inner(p: &[u8], s: &[u8]) -> bool {
         }
         (Some(b'?'), Some(_)) => glob_match_inner(&p[1..], &s[1..]),
         (Some(b'['), _) => {
-            // character class
             if let Some(close) = p[1..].iter().position(|&c| c == b']') {
                 let class = &p[1..close+1];
                 let matched = s.first().map(|&sc| {
@@ -289,7 +278,6 @@ fn stdin_lines() -> Vec<String> {
     stdin.lock().lines().filter_map(|l| l.ok()).collect()
 }
 
-// ─── LS ───────────────────────────────────────────────────────────────────────
 fn cmd_ls(args: &[String]) -> anyhow::Result<()> {
     let (flags, _, mut positional, _) = parse_flags(args, "alhrtSFd1RvA", "");
     if positional.is_empty() {
@@ -329,7 +317,6 @@ fn cmd_ls(args: &[String]) -> anyhow::Result<()> {
         }
     }
 
-    // Sort
     if sort_time {
         entries.sort_by(|a, b| {
             let ta = a.meta.as_ref().and_then(|m| m.modified().ok());
@@ -397,7 +384,6 @@ fn cmd_ls(args: &[String]) -> anyhow::Result<()> {
             let indicator = if classify { meta.map(|m| type_indicator(&e.path, m)).unwrap_or("") } else { "" };
             format!("{colored}{indicator}")
         }).collect();
-        // Simple column output
         let term_width = 80usize;
         let max_name_len = entries.iter().map(|e| e.name.len()).max().unwrap_or(0) + 2;
         let cols = (term_width / max_name_len.max(1)).max(1);
@@ -457,7 +443,6 @@ fn format_mode(mode: u32) -> String {
 #[cfg(not(unix))]
 fn format_mode(_mode: u32) -> String { "---------".to_string() }
 
-// ─── CAT ──────────────────────────────────────────────────────────────────────
 fn cmd_cat(args: &[String]) -> anyhow::Result<()> {
     let (flags, _, positional, _) = parse_flags(args, "nAsb", "");
     let number = flags.contains(&'n');
@@ -502,7 +487,6 @@ fn cmd_cat(args: &[String]) -> anyhow::Result<()> {
     Ok(())
 }
 
-// ─── CP ───────────────────────────────────────────────────────────────────────
 fn cmd_cp(args: &[String]) -> anyhow::Result<()> {
     let (flags, _, positional, _) = parse_flags(args, "rRvifupP", "");
     let recursive = flags.contains(&'r') || flags.contains(&'R');
@@ -543,7 +527,6 @@ fn cp_entry(src: &Path, dst: &Path, recursive: bool, verbose: bool, interactive:
         }
         return Ok(());
     }
-    // File
     if dst.exists() {
         if interactive && !force {
             eprint!("cp: overwrite '{}'? [y/N] ", dst.display());
@@ -572,7 +555,6 @@ fn cp_entry(src: &Path, dst: &Path, recursive: bool, verbose: bool, interactive:
     Ok(())
 }
 
-// ─── MV ───────────────────────────────────────────────────────────────────────
 fn cmd_mv(args: &[String]) -> anyhow::Result<()> {
     let (flags, _, positional, _) = parse_flags(args, "vifub", "");
     let verbose = flags.contains(&'v');
@@ -620,7 +602,6 @@ fn cmd_mv(args: &[String]) -> anyhow::Result<()> {
     Ok(())
 }
 
-// ─── RM ───────────────────────────────────────────────────────────────────────
 fn cmd_rm(args: &[String]) -> anyhow::Result<()> {
     let (flags, _, positional, _) = parse_flags(args, "rRfvi", "");
     let recursive = flags.contains(&'r') || flags.contains(&'R');
@@ -654,7 +635,6 @@ fn cmd_rm(args: &[String]) -> anyhow::Result<()> {
     Ok(())
 }
 
-// ─── MKDIR ────────────────────────────────────────────────────────────────────
 fn cmd_mkdir(args: &[String]) -> anyhow::Result<()> {
     let (flags, _, positional, _) = parse_flags(args, "pv", "");
     let parents = flags.contains(&'p');
@@ -671,7 +651,6 @@ fn cmd_mkdir(args: &[String]) -> anyhow::Result<()> {
     Ok(())
 }
 
-// ─── RMDIR ────────────────────────────────────────────────────────────────────
 fn cmd_rmdir(args: &[String]) -> anyhow::Result<()> {
     for d in args {
         fs::remove_dir(d).with_context(|| format!("rmdir: {d}"))?;
@@ -679,11 +658,9 @@ fn cmd_rmdir(args: &[String]) -> anyhow::Result<()> {
     Ok(())
 }
 
-// ─── TOUCH ────────────────────────────────────────────────────────────────────
 fn cmd_touch(args: &[String]) -> anyhow::Result<()> {
     for f in args {
         if Path::new(f).exists() {
-            // update timestamps
             #[cfg(unix)]
             {
                 let now = nix::sys::time::TimeSpec::from_duration(
@@ -705,7 +682,6 @@ fn cmd_touch(args: &[String]) -> anyhow::Result<()> {
     Ok(())
 }
 
-// ─── LN ───────────────────────────────────────────────────────────────────────
 fn cmd_ln(args: &[String]) -> anyhow::Result<()> {
     let (flags, _, positional, _) = parse_flags(args, "sfb", "");
     let symbolic = flags.contains(&'s');
@@ -742,7 +718,6 @@ fn cmd_ln(args: &[String]) -> anyhow::Result<()> {
     Ok(())
 }
 
-// ─── CHMOD ────────────────────────────────────────────────────────────────────
 fn cmd_chmod(args: &[String]) -> anyhow::Result<()> {
     #[cfg(unix)]
     {
@@ -783,11 +758,9 @@ fn chmod_path(p: &Path, mode_str: &str, recursive: bool, verbose: bool) -> anyho
 
 #[cfg(unix)]
 fn parse_chmod_mode(s: &str, current: u32) -> anyhow::Result<u32> {
-    // Try octal first
     if s.chars().all(|c| c.is_ascii_digit()) {
         return Ok(u32::from_str_radix(s, 8).with_context(|| format!("chmod: mode invalide: {s}"))?);
     }
-    // Symbolic: [ugoa][+-=][rwxXst]+,...
     let mut mode = current;
     for part in s.split(',') {
         let part = part.trim();
@@ -828,7 +801,6 @@ fn parse_chmod_mode(s: &str, current: u32) -> anyhow::Result<u32> {
     Ok(mode)
 }
 
-// ─── STAT ─────────────────────────────────────────────────────────────────────
 fn cmd_stat(args: &[String]) -> anyhow::Result<()> {
     for f in args {
         let meta = fs::symlink_metadata(f).with_context(|| format!("stat: {f}"))?;
@@ -854,7 +826,6 @@ fn cmd_stat(args: &[String]) -> anyhow::Result<()> {
     Ok(())
 }
 
-// ─── DU ───────────────────────────────────────────────────────────────────────
 fn cmd_du(args: &[String]) -> anyhow::Result<()> {
     let (flags, values, mut positional, long_values) = parse_flags(args, "hsacx", "d");
     let human = flags.contains(&'h');
@@ -901,7 +872,6 @@ fn du_path(p: &Path, human: bool, summarize: bool, all_files: bool, max_depth: O
     Ok(size)
 }
 
-// ─── DF ───────────────────────────────────────────────────────────────────────
 fn cmd_df(args: &[String]) -> anyhow::Result<()> {
     #[cfg(target_os = "linux")]
     {
@@ -909,7 +879,6 @@ fn cmd_df(args: &[String]) -> anyhow::Result<()> {
         let human = flags.contains(&'h');
         let show_type = flags.contains(&'T');
 
-        // Read /proc/mounts
         let mounts_str = fs::read_to_string("/proc/mounts").unwrap_or_default();
         let mut mounts: Vec<(String, String, String)> = Vec::new(); // device, mountpoint, fstype
         for line in mounts_str.lines() {
@@ -965,10 +934,7 @@ fn cmd_df(args: &[String]) -> anyhow::Result<()> {
     }
 }
 
-// ─── FIND ─────────────────────────────────────────────────────────────────────
 fn cmd_find(args: &[String]) -> anyhow::Result<()> {
-    // find [path...] [options]
-    // Separate paths from options
     let mut paths: Vec<String> = Vec::new();
     let mut opts: Vec<String> = Vec::new();
     let mut in_opts = false;
@@ -978,12 +944,11 @@ fn cmd_find(args: &[String]) -> anyhow::Result<()> {
     }
     if paths.is_empty() { paths.push(".".to_string()); }
 
-    // Parse options
     let mut name_pattern: Option<String> = None;
-    let mut ftype: Option<char> = None; // f, d, l
+    let mut ftype: Option<char> = None;
     let mut maxdepth: Option<usize> = None;
     let mut mindepth: Option<usize> = None;
-    let mut size_filter: Option<(char, u64)> = None; // (+/-/=, bytes)
+    let mut size_filter: Option<(char, u64)> = None;
     let mut newer: Option<PathBuf> = None;
     let mut empty = false;
     let mut do_delete = false;
@@ -1142,7 +1107,6 @@ fn find_walk(
     Ok(())
 }
 
-// ─── HEAD ─────────────────────────────────────────────────────────────────────
 fn cmd_head(args: &[String]) -> anyhow::Result<()> {
     let (_, values, positional, _) = parse_flags(args, "", "nc");
     let n: usize = values.get(&'n').and_then(|v| v.parse().ok()).unwrap_or(10);
@@ -1178,7 +1142,6 @@ fn cmd_head(args: &[String]) -> anyhow::Result<()> {
     Ok(())
 }
 
-// ─── TAIL ─────────────────────────────────────────────────────────────────────
 fn cmd_tail(args: &[String]) -> anyhow::Result<()> {
     let (flags, values, positional, _) = parse_flags(args, "f", "nc");
     let n: usize = values.get(&'n').and_then(|v| v.parse().ok()).unwrap_or(10);
@@ -1239,7 +1202,6 @@ fn cmd_tail(args: &[String]) -> anyhow::Result<()> {
 
 use std::io::Seek;
 
-// ─── WC ───────────────────────────────────────────────────────────────────────
 fn cmd_wc(args: &[String]) -> anyhow::Result<()> {
     let (flags, _, positional, _) = parse_flags(args, "lwcmL", "");
     let count_lines = flags.contains(&'l');
@@ -1289,7 +1251,6 @@ fn cmd_wc(args: &[String]) -> anyhow::Result<()> {
     Ok(())
 }
 
-// ─── TEE ──────────────────────────────────────────────────────────────────────
 fn cmd_tee(args: &[String]) -> anyhow::Result<()> {
     let (flags, _, positional, _) = parse_flags(args, "a", "");
     let append = flags.contains(&'a');
@@ -1310,7 +1271,6 @@ fn cmd_tee(args: &[String]) -> anyhow::Result<()> {
     Ok(())
 }
 
-// ─── GREP ─────────────────────────────────────────────────────────────────────
 fn cmd_grep(args: &[String]) -> anyhow::Result<()> {
     let (flags, values, mut positional, _) = parse_flags(args, "ivnclqrREFowh", "ACBme");
     let ignore_case = flags.contains(&'i');
@@ -1332,7 +1292,6 @@ fn cmd_grep(args: &[String]) -> anyhow::Result<()> {
     let after = after.max(context_n);
     let before = before.max(context_n);
 
-    // Patterns: -e can be specified multiple times, handled via last value
     let mut patterns: Vec<String> = Vec::new();
     if let Some(p) = values.get(&'e') { patterns.push(p.clone()); }
 
@@ -1362,7 +1321,6 @@ fn cmd_grep(args: &[String]) -> anyhow::Result<()> {
             None
         })
     } else {
-        // literal or basic
         let pats = patterns.clone();
         Box::new(move |line: &str| {
             for p in &pats {
@@ -1412,7 +1370,6 @@ fn cmd_grep(args: &[String]) -> anyhow::Result<()> {
                 match_count += 1;
 
                 if !count_only && !files_with_matches && !quiet {
-                    // print before context
                     for (bn, bl) in &context_buf {
                         let prefix = if show_fname { format!("{fname}-{bn}: ") } else if line_numbers { format!("{bn}: ") } else { String::new() };
                         println!("{prefix}{bl}");
@@ -1452,13 +1409,12 @@ fn cmd_grep(args: &[String]) -> anyhow::Result<()> {
         Ok(any)
     };
 
-    let mut files: Vec<(String, bool)> = Vec::new(); // (path, show_fname)
+    let mut files: Vec<(String, bool)> = Vec::new();
     if positional.is_empty() {
         let lines = stdin_lines();
         let any = process_lines(&lines, "", false)?;
         if any { found_any = true; }
     } else {
-        // Expand recursive
         let mut expanded: Vec<String> = Vec::new();
         for p in &positional {
             if recursive && Path::new(p).is_dir() {
@@ -1495,7 +1451,6 @@ fn grep_walk(p: &Path, out: &mut Vec<String>) {
     }
 }
 
-// ─── SORT ─────────────────────────────────────────────────────────────────────
 fn cmd_sort(args: &[String]) -> anyhow::Result<()> {
     let (flags, values, positional, _) = parse_flags(args, "runfb", "kto");
     let reverse = flags.contains(&'r');
@@ -1547,7 +1502,6 @@ fn extract_key(line: &str, key: &Option<String>, sep: Option<char>) -> String {
     } else {
         line.split_whitespace().collect()
     };
-    // key format: N[.M][flags] or N,M[flags]
     let clean = k.trim_end_matches(|c: char| c.is_alphabetic());
     let (start_field, end_field): (usize, Option<usize>) = if let Some(comma) = clean.find(',') {
         let s: usize = clean[..comma].parse().unwrap_or(1);
@@ -1562,7 +1516,6 @@ fn extract_key(line: &str, key: &Option<String>, sep: Option<char>) -> String {
     parts.get(si..ei).map(|s| s.join(" ")).unwrap_or_default()
 }
 
-// ─── UNIQ ─────────────────────────────────────────────────────────────────────
 fn cmd_uniq(args: &[String]) -> anyhow::Result<()> {
     let (flags, values, positional, _) = parse_flags(args, "cudi", "fsw");
     let count = flags.contains(&'c');
@@ -1605,7 +1558,6 @@ fn cmd_uniq(args: &[String]) -> anyhow::Result<()> {
     Ok(())
 }
 
-// ─── CUT ──────────────────────────────────────────────────────────────────────
 fn cmd_cut(args: &[String]) -> anyhow::Result<()> {
     let (flags, values, positional, _) = parse_flags(args, "s", "dfbc");
     let delim: char = values.get(&'d').and_then(|v| v.chars().next()).unwrap_or('\t');
@@ -1678,7 +1630,6 @@ fn cmd_cut(args: &[String]) -> anyhow::Result<()> {
     Ok(())
 }
 
-// ─── TR ───────────────────────────────────────────────────────────────────────
 fn cmd_tr(args: &[String]) -> anyhow::Result<()> {
     let (flags, _, positional, _) = parse_flags(args, "dsc", "");
     let delete = flags.contains(&'d');
@@ -1727,7 +1678,6 @@ fn expand_tr_set(s: &str) -> Vec<char> {
     let mut chars = s.chars().peekable();
     while let Some(c) = chars.next() {
         if c == '[' {
-            // POSIX class or range
             if chars.peek() == Some(&':') {
                 chars.next();
                 let mut class = String::new();
@@ -1781,7 +1731,6 @@ fn expand_posix_class(class: &str) -> Vec<char> {
     }
 }
 
-// ─── SEQ ──────────────────────────────────────────────────────────────────────
 fn cmd_seq(args: &[String]) -> anyhow::Result<()> {
     let (flags, values, positional, _) = parse_flags(args, "w", "s");
     let sep = values.get(&'s').cloned().unwrap_or_else(|| "\n".to_string());
@@ -1821,7 +1770,6 @@ fn cmd_seq(args: &[String]) -> anyhow::Result<()> {
     Ok(())
 }
 
-// ─── DIFF ─────────────────────────────────────────────────────────────────────
 fn cmd_diff(args: &[String]) -> anyhow::Result<()> {
     let (flags, _, positional, _) = parse_flags(args, "quib", "");
     let quiet = flags.contains(&'q');
@@ -1887,7 +1835,6 @@ fn diff_lines(a: &[String], b: &[String]) -> Vec<DiffHunk> {
             ai += 1; bi += 1; li += 1;
         } else {
             if !in_hunk { hunk_start_a = ai; hunk_start_b = bi; in_hunk = true; }
-            // Determine what's different
             let a_in_lcs = lcs.get(li).map(|l| ai < a.len() && &a[ai] == l).unwrap_or(false);
             let b_in_lcs = lcs.get(li).map(|l| bi < b.len() && &b[bi] == l).unwrap_or(false);
             if !a_in_lcs && ai < a.len() { removed.push(a[ai].clone()); ai += 1; }
@@ -1915,7 +1862,6 @@ fn lcs(a: &[String], b: &[String]) -> Vec<String> {
     result
 }
 
-// ─── XARGS ────────────────────────────────────────────────────────────────────
 fn cmd_xargs(args: &[String]) -> anyhow::Result<()> {
     let (flags, values, positional, _) = parse_flags(args, "p0", "nId");
     let n: usize = values.get(&'n').and_then(|v| v.parse().ok()).unwrap_or(usize::MAX);
@@ -1964,7 +1910,6 @@ fn cmd_xargs(args: &[String]) -> anyhow::Result<()> {
     Ok(())
 }
 
-// ─── ECHO ─────────────────────────────────────────────────────────────────────
 fn cmd_echo(args: &[String]) -> anyhow::Result<()> {
     let mut no_newline = false;
     let mut interpret = false;
@@ -2007,13 +1952,11 @@ fn interpret_escapes(s: &str) -> String {
     result
 }
 
-// ─── PWD ──────────────────────────────────────────────────────────────────────
 fn cmd_pwd(_args: &[String]) -> anyhow::Result<()> {
     println!("{}", env::current_dir()?.display());
     Ok(())
 }
 
-// ─── WHICH ────────────────────────────────────────────────────────────────────
 fn cmd_which(args: &[String]) -> anyhow::Result<()> {
     let (flags, _, positional, _) = parse_flags(args, "a", "");
     let all = flags.contains(&'a');
@@ -2028,7 +1971,6 @@ fn cmd_which(args: &[String]) -> anyhow::Result<()> {
     Ok(())
 }
 
-// ─── UNIX USER/GROUP HELPERS ──────────────────────────────────────────────────
 #[cfg(unix)]
 extern "C" {
     fn getuid() -> u32;
@@ -2066,7 +2008,6 @@ fn gid_to_name(gid: u32) -> Option<String> {
 
 #[cfg(unix)]
 fn get_groups() -> Vec<u32> {
-    // Read from /proc/self/status
     if let Ok(s) = fs::read_to_string("/proc/self/status") {
         for line in s.lines() {
             if line.starts_with("Groups:") {
@@ -2079,7 +2020,6 @@ fn get_groups() -> Vec<u32> {
     vec![unsafe { libc_getgid() }]
 }
 
-// ─── WHOAMI ───────────────────────────────────────────────────────────────────
 fn cmd_whoami(_args: &[String]) -> anyhow::Result<()> {
     #[cfg(unix)]
     {
@@ -2095,7 +2035,6 @@ fn cmd_whoami(_args: &[String]) -> anyhow::Result<()> {
     }
 }
 
-// ─── UNAME ────────────────────────────────────────────────────────────────────
 fn cmd_uname(args: &[String]) -> anyhow::Result<()> {
     let (flags, _, _, _) = parse_flags(args, "asnrvmpo", "");
     let all = flags.contains(&'a');
@@ -2122,7 +2061,6 @@ fn cmd_uname(args: &[String]) -> anyhow::Result<()> {
     Ok(())
 }
 
-// ─── DATE ─────────────────────────────────────────────────────────────────────
 fn cmd_date(args: &[String]) -> anyhow::Result<()> {
     let secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -2133,7 +2071,6 @@ fn cmd_date(args: &[String]) -> anyhow::Result<()> {
     Ok(())
 }
 
-// ─── SLEEP ────────────────────────────────────────────────────────────────────
 fn cmd_sleep(args: &[String]) -> anyhow::Result<()> {
     for a in args {
         let (num, mult): (f64, f64) = if a.ends_with('m') {
@@ -2150,7 +2087,6 @@ fn cmd_sleep(args: &[String]) -> anyhow::Result<()> {
     Ok(())
 }
 
-// ─── YES ──────────────────────────────────────────────────────────────────────
 fn cmd_yes(args: &[String]) -> anyhow::Result<()> {
     let word = if args.is_empty() { "y".to_string() } else { args.join(" ") };
     let stdout = io::stdout();
@@ -2158,7 +2094,6 @@ fn cmd_yes(args: &[String]) -> anyhow::Result<()> {
     loop { writeln!(out, "{word}")?; }
 }
 
-// ─── ENV ──────────────────────────────────────────────────────────────────────
 fn cmd_env(args: &[String]) -> anyhow::Result<()> {
     if args.is_empty() {
         for (k, v) in env::vars() { println!("{k}={v}"); }
@@ -2170,7 +2105,6 @@ fn cmd_env(args: &[String]) -> anyhow::Result<()> {
     Ok(())
 }
 
-// ─── ID ───────────────────────────────────────────────────────────────────────
 fn cmd_id(_args: &[String]) -> anyhow::Result<()> {
     #[cfg(unix)]
     {
@@ -2193,7 +2127,6 @@ fn cmd_id(_args: &[String]) -> anyhow::Result<()> {
     }
 }
 
-// ─── PS ───────────────────────────────────────────────────────────────────────
 fn cmd_ps(args: &[String]) -> anyhow::Result<()> {
     #[cfg(target_os = "linux")]
     {
@@ -2228,7 +2161,6 @@ fn cmd_ps(args: &[String]) -> anyhow::Result<()> {
                     .replace('\0', " ").trim().to_string();
                 let status = fs::read_to_string(&status_path).unwrap_or_default();
 
-                // Get UID from status
                 let proc_uid: u32 = status.lines()
                     .find(|l| l.starts_with("Uid:"))
                     .and_then(|l| l.split_whitespace().nth(1))
@@ -2237,7 +2169,6 @@ fn cmd_ps(args: &[String]) -> anyhow::Result<()> {
 
                 if !all && proc_uid != my_uid { continue; }
 
-                // Parse stat: pid (name) state ppid ...
                 let paren_end = stat.rfind(')').unwrap_or(0);
                 let rest: Vec<&str> = stat[paren_end+2..].split_whitespace().collect();
                 let ppid: u32 = rest.get(1).and_then(|s| s.parse().ok()).unwrap_or(0);
@@ -2263,7 +2194,6 @@ fn cmd_ps(args: &[String]) -> anyhow::Result<()> {
     }
 }
 
-// ─── KILL ─────────────────────────────────────────────────────────────────────
 fn cmd_kill(args: &[String]) -> anyhow::Result<()> {
     #[cfg(unix)]
     {
@@ -2311,7 +2241,6 @@ fn cmd_kill(args: &[String]) -> anyhow::Result<()> {
     }
 }
 
-// ─── BASENAME / DIRNAME / REALPATH ───────────────────────────────────────────
 fn cmd_basename(args: &[String]) -> anyhow::Result<()> {
     if args.is_empty() { bail!("basename: argument manquant"); }
     let p = Path::new(&args[0]);
@@ -2338,14 +2267,12 @@ fn cmd_realpath(args: &[String]) -> anyhow::Result<()> {
     Ok(())
 }
 
-// ─── DATE UTILS ──────────────────────────────────────────────────────────────
-/// Returns (year, month, day, hour, min, sec, weekday 0=Sun, yday)
 fn unix_to_datetime(secs: u64) -> (u32, u32, u32, u32, u32, u32, u32, u32) {
     let sec = (secs % 60) as u32;
     let min = ((secs / 60) % 60) as u32;
     let hour = ((secs / 3600) % 24) as u32;
     let days = secs / 86400;
-    let weekday = ((days + 4) % 7) as u32; // 0=Sun
+    let weekday = ((days + 4) % 7) as u32;
     let mut year = 1970u32;
     let mut rem = days;
     loop {
