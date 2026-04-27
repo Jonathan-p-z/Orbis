@@ -39,8 +39,31 @@ mod imp {
         }
 
         pub fn init_tty(&mut self) {
+            use nix::unistd::{getpid, setpgid, tcsetpgrp};
+            use std::os::fd::BorrowedFd;
+
             self.shell_tty = Some(libc::STDIN_FILENO);
-            self.shell_pgid = Some(nix::unistd::getpgrp());
+
+            // Only take terminal ownership in interactive mode (stdin is a tty).
+            // If stdin is a pipe/file (script mode), skip setpgid/tcsetpgrp.
+            if unsafe { libc::isatty(libc::STDIN_FILENO) } == 1 {
+                let pid = getpid();
+                // Become our own process group leader so child process groups
+                // don't inherit the shell's pgid.
+                let _ = setpgid(pid, pid);
+                self.shell_pgid = Some(pid);
+                // Give the terminal to the shell's process group.
+                let tty = unsafe { BorrowedFd::borrow_raw(libc::STDIN_FILENO) };
+                let _ = tcsetpgrp(tty, pid);
+            } else {
+                self.shell_pgid = Some(nix::unistd::getpgrp());
+            }
+        }
+
+        /// Returns the job spec string for the current job (highest active id),
+        /// or None if there are no jobs.
+        pub fn current_job(&self) -> Option<String> {
+            self.jobs.keys().last().map(|id| format!("%{id}"))
         }
 
         pub fn add(&mut self, pgid: Pid, pids: Vec<Pid>, cmdline: String) -> u32 {
@@ -89,6 +112,12 @@ mod imp {
             }
         }
 
+        pub fn mark_stopped(&mut self, id: u32) {
+            if let Some(j) = self.jobs.get_mut(&id) {
+                j.status = "Stopped".into();
+            }
+        }
+
         pub fn bg(&mut self, spec: &str) -> anyhow::Result<()> {
             let j = self.get_job_mut(spec)?;
             killpg(j.pgid, Signal::SIGCONT)?;
@@ -109,11 +138,13 @@ mod imp {
             tcsetpgrp(tty, j.pgid)?;
             killpg(j.pgid, Signal::SIGCONT)?;
 
-            // wait for each child pid individually — more reliable than -pgid
+            // wait for each child pid; WUNTRACED lets us detect if Ctrl+Z re-stops the job
+            let mut was_stopped = false;
             for &pid in &j.pids {
                 loop {
-                    match waitpid(pid, None) {
+                    match waitpid(pid, Some(WaitPidFlag::WUNTRACED)) {
                         Ok(WaitStatus::Exited(_, _)) | Ok(WaitStatus::Signaled(_, _, _)) => break,
+                        Ok(WaitStatus::Stopped(_, _)) => { was_stopped = true; break; }
                         Ok(_) => continue,
                         Err(_) => break, // ECHILD: already reaped
                     }
@@ -122,7 +153,15 @@ mod imp {
 
             let tty2 = unsafe { BorrowedFd::borrow_raw(tty_fd) };
             tcsetpgrp(tty2, shell_pgid)?;
-            self.jobs.retain(|_, x| x.pgid != j.pgid);
+
+            if was_stopped {
+                if let Some(job) = self.jobs.get_mut(&j.id) {
+                    job.status = "Stopped".into();
+                }
+                eprintln!("\n[{}] Stopped   {}", j.id, j.cmdline);
+            } else {
+                self.jobs.retain(|_, x| x.pgid != j.pgid);
+            }
             Ok(())
         }
     }
@@ -169,6 +208,10 @@ impl JobManager {
     }
 
     pub fn init_tty(&mut self) {}
+
+    pub fn current_job(&self) -> Option<String> {
+        self.jobs.keys().last().map(|id| format!("%{id}"))
+    }
 
     pub fn add(&mut self, children: Vec<std::process::Child>, cmdline: String) -> u32 {
         self.next_id += 1;
