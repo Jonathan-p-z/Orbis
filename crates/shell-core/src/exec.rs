@@ -1,5 +1,14 @@
 use crate::{ast::*, env::ShellEnv, jobs::JobManager};
 
+fn expand_tilde_argv(env: &ShellEnv, pl: &mut Pipeline) {
+    let home = env.get("HOME").map(|s| s.to_string());
+    for cmd in &mut pl.cmds {
+        for tok in &mut cmd.argv {
+            *tok = crate::env::expand_tilde(tok, home.as_deref());
+        }
+    }
+}
+
 fn expand_aliases(env: &ShellEnv, pl: &mut Pipeline) {
     // cap at 8 passes to avoid infinite alias loops
     const LIMIT: usize = 8;
@@ -26,12 +35,12 @@ mod imp {
     use crate::builtins::{try_run_builtin, BuiltinResult};
     use anyhow::{bail, Context};
     use nix::{
-        fcntl::{fcntl, open, FcntlArg, FdFlag, OFlag},
+        fcntl::{open, OFlag},
         libc,
         sys::{
             signal::{signal, SigHandler, Signal},
             stat::Mode,
-            wait::{waitpid, WaitStatus},
+            wait::{waitpid, WaitPidFlag, WaitStatus},
         },
         unistd::{dup2, execvp, fork, getpgrp, pipe2, setpgid, tcsetpgrp, ForkResult, Pid},
     };
@@ -42,16 +51,22 @@ mod imp {
     pub struct Shell {
         pub env: ShellEnv,
         pub jobs: JobManager,
+        pub last_exit: i32,
     }
 
     impl Shell {
         pub fn new() -> anyhow::Result<Self> {
             let mut jobs = JobManager::new();
             jobs.init_tty();
-            Ok(Self { env: ShellEnv::new()?, jobs })
+            Ok(Self { env: ShellEnv::new()?, jobs, last_exit: 0 })
         }
 
         pub fn run_pipeline(&mut self, mut pl: Pipeline, cmdline: String) -> anyhow::Result<i32> {
+            expand_tilde_argv(&self.env, &mut pl);
+            // Aliases must expand before the builtin check so that `alias cd2=cd`
+            // causes cd2 to be recognised as the builtin cd.
+            expand_aliases(&self.env, &mut pl);
+
             // builtins only for a single foreground command — pipes and bg go through fork
             if pl.cmds.len() == 1 && !pl.background {
                 let argv = &pl.cmds[0].argv;
@@ -63,8 +78,6 @@ mod imp {
                 }
             }
 
-            expand_aliases(&self.env, &mut pl);
-
             let mut pids = Vec::new();
             let mut pgid: Option<Pid> = None;
             let mut prev_read: Option<OwnedFd> = None;
@@ -72,6 +85,9 @@ mod imp {
             for (idx, cmd) in pl.cmds.iter().enumerate() {
                 let is_last = idx == pl.cmds.len() - 1;
                 let (r, w): (Option<OwnedFd>, Option<OwnedFd>) = if !is_last {
+                    // O_CLOEXEC: both ends close automatically in the child after
+                    // execvp replaces the process image. dup2 clears CLOEXEC on the
+                    // target fd (POSIX), so stdin/stdout remapping survives exec.
                     let (r, w) = pipe2(OFlag::O_CLOEXEC)?;
                     (Some(r), Some(w))
                 } else {
@@ -93,12 +109,14 @@ mod imp {
                             dup2(fd.as_raw_fd(), libc::STDOUT_FILENO)?;
                         }
 
-                        // OwnedFd drops here, closing the fd before exec
-                        apply_redirects(cmd)?;
+                        // Drop all pipe OwnedFds explicitly: O_CLOEXEC closes them
+                        // when execvp succeeds; explicit drops close them when execvp
+                        // fails (so the error path doesn't leak fds either).
+                        drop(prev_read.take());
+                        drop(r);
+                        drop(w);
 
-                        // set CLOEXEC on all fds > 2 so rustyline sockets and pipe
-                        // ends are not inherited by the child after execvp
-                        cloexec_extra_fds();
+                        apply_redirects(cmd)?;
 
                         // replace the process image
                         if cmd.argv.is_empty() {
@@ -127,7 +145,7 @@ mod imp {
             }
 
             if pl.background {
-                let id = self.jobs.add(pgid.context("pgid absent")?, pids.clone(), cmdline);
+                let id = self.jobs.add(pgid.context("pgid absent")?, pids, cmdline);
                 println!("[{id}] {}", pgid.unwrap());
                 Ok(0)
             } else {
@@ -143,13 +161,18 @@ mod imp {
                 let old_sigint = unsafe { signal(Signal::SIGINT, SigHandler::SigIgn) };
                 let old_sigtstp = unsafe { signal(Signal::SIGTSTP, SigHandler::SigIgn) };
 
-                // wait on all pids, only the last exit code matters
-                let mut last_code = 0;
-                for pid in pids {
-                    match waitpid(pid, None)? {
-                        WaitStatus::Exited(_, code) => last_code = code,
-                        WaitStatus::Signaled(_, sig, _) => last_code = 128 + sig as i32,
-                        _ => {}
+                // wait on all pids; WUNTRACED lets waitpid return when Ctrl+Z stops the job
+                let mut last_code = 0i32;
+                let mut was_stopped = false;
+                for pid in &pids {
+                    loop {
+                        match waitpid(*pid, Some(WaitPidFlag::WUNTRACED)) {
+                            Ok(WaitStatus::Exited(_, code)) => { last_code = code; break; }
+                            Ok(WaitStatus::Signaled(_, sig, _)) => { last_code = 128 + sig as i32; break; }
+                            Ok(WaitStatus::Stopped(_, _)) => { was_stopped = true; break; }
+                            Ok(_) => continue,
+                            Err(_) => break, // ECHILD: already reaped
+                        }
                     }
                 }
 
@@ -165,24 +188,15 @@ mod imp {
                     unsafe { let _ = signal(Signal::SIGTSTP, old); }
                 }
 
+                if was_stopped {
+                    let id = self.jobs.add(pgid.context("pgid absent")?, pids, cmdline.clone());
+                    self.jobs.mark_stopped(id);
+                    eprintln!("\n[{id}] Stopped   {cmdline}");
+                    last_code = 128 + libc::SIGTSTP;
+                }
+
                 Ok(last_code)
             }
-        }
-    }
-
-    /// Set O_CLOEXEC on every fd > 2 in the child process so that rustyline
-    /// sockets and pipe ends are closed automatically after execvp.
-    fn cloexec_extra_fds() {
-        let fds: Vec<i32> = match std::fs::read_dir("/proc/self/fd") {
-            Ok(entries) => entries
-                .filter_map(|e| e.ok())
-                .filter_map(|e| e.file_name().to_str().and_then(|s| s.parse::<i32>().ok()))
-                .filter(|&fd| fd > 2)
-                .collect(),
-            Err(_) => return,
-        };
-        for fd in fds {
-            let _ = fcntl(fd, FcntlArg::F_SETFD(FdFlag::FD_CLOEXEC));
         }
     }
 
@@ -238,12 +252,13 @@ pub use imp::Shell;
 pub struct Shell {
     pub env: ShellEnv,
     pub jobs: JobManager,
+    pub last_exit: i32,
 }
 
 #[cfg(not(unix))]
 impl Shell {
     pub fn new() -> anyhow::Result<Self> {
-        Ok(Self { env: ShellEnv::new()?, jobs: JobManager::new() })
+        Ok(Self { env: ShellEnv::new()?, jobs: JobManager::new(), last_exit: 0 })
     }
 
     pub fn run_pipeline(&mut self, mut pl: Pipeline, cmdline: String) -> anyhow::Result<i32> {
@@ -253,6 +268,9 @@ impl Shell {
             fs::OpenOptions,
             process::{Command, Stdio},
         };
+
+        expand_tilde_argv(&self.env, &mut pl);
+        expand_aliases(&self.env, &mut pl);
 
         // builtins only for single foreground commands
         if pl.cmds.len() == 1 && !pl.background {
@@ -264,8 +282,6 @@ impl Shell {
                 });
             }
         }
-
-        expand_aliases(&self.env, &mut pl);
 
         let mut children: Vec<std::process::Child> = Vec::new();
         let mut prev_stdout: Option<std::process::ChildStdout> = None;
@@ -364,7 +380,11 @@ impl Shell {
     }
 
     pub fn run_line(&mut self, line: &str) -> anyhow::Result<i32> {
-        run_line_impl(self, line)
+        let result = run_line_impl(self, line);
+        if let Ok(code) = result {
+            self.last_exit = code;
+        }
+        result
     }
 }
 
@@ -393,6 +413,11 @@ fn run_line_impl(shell: &mut Shell, line: &str) -> anyhow::Result<i32> {
     if should_delegate_to_posix_shell(&core_line) {
         return shell.run_via_bash_or_sh(&core_line, background); // bash handles what we don't
     }
+
+    // expand $VAR / ${VAR} / $? / $$ — after delegation so bash still gets raw text for &&/||
+    let core_line = crate::env::expand_vars(&core_line, &shell.env, shell.last_exit);
+    // expand globs (respects single/double quote context in the raw line)
+    let core_line = crate::env::expand_globs_in_line(&core_line, &shell.env.cwd, shell.env.get("HOME"));
 
     match crate::parse_line(&core_line) {
         Ok(Some(pl)) => {
@@ -464,7 +489,6 @@ fn should_delegate_to_cmd(line: &str) -> bool {
 
 #[cfg(unix)]
 fn should_delegate_to_posix_shell(line: &str) -> bool {
-    // anything the MVP parser can't handle gets delegated to bash
     line.contains("&&")
         || line.contains("||")
         || line.contains(';')
@@ -507,7 +531,11 @@ impl Shell {
 #[cfg(unix)]
 impl Shell {
     pub fn run_line(&mut self, line: &str) -> anyhow::Result<i32> {
-        run_line_impl(self, line)
+        let result = run_line_impl(self, line);
+        if let Ok(code) = result {
+            self.last_exit = code;
+        }
+        result
     }
 
     fn run_via_bash_or_sh(&mut self, line: &str, background: bool) -> anyhow::Result<i32> {
