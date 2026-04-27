@@ -25,7 +25,7 @@ fn find_in_path(prog: &str) -> Option<std::path::PathBuf> {
     #[cfg(windows)]
     {
         let pathext_os = std::env::var_os("PATHEXT").unwrap_or(".EXE;.CMD;.BAT;.COM".into());
-        let pathext = pathext_os.to_string_lossy().into_owned(); // avoids a temporary value (E0716)
+        let pathext = pathext_os.to_string_lossy().into_owned();
         let exts = pathext
             .split(';')
             .filter(|s| !s.is_empty())
@@ -69,7 +69,7 @@ pub fn try_run_builtin(
         "cd" => {
             let to: String = argv
                 .get(1)
-                .cloned()
+                .map(|s| crate::env::expand_tilde(s, env.get("HOME")))
                 .or_else(|| env.get("HOME").map(|s| s.to_string()))
                 .unwrap_or_else(|| "/".to_string());
             env.chdir(to)?;
@@ -80,11 +80,10 @@ pub fn try_run_builtin(
         "cs" => {
             let to: String = argv
                 .get(1)
-                .cloned()
+                .map(|s| crate::env::expand_tilde(s, env.get("HOME")))
                 .or_else(|| env.get("HOME").map(|s| s.to_string()))
                 .unwrap_or_else(|| "/".to_string());
             env.chdir(&to)?;
-            // list what's actually in there after the jump
             match std::fs::read_dir(&env.cwd) {
                 Ok(entries) => {
                     let mut names: Vec<String> = entries
@@ -111,7 +110,9 @@ pub fn try_run_builtin(
                 if let Some((k, v)) = kv.split_once('=') {
                     env.set(k, v);
                 } else {
-                    bail!("export expects KEY=VALUE");
+                    // export KEY — re-export with current value, or empty string
+                    let v = env.get(kv).unwrap_or("").to_string();
+                    env.set(kv.as_str(), v);
                 }
             }
             Ok(Some(BuiltinResult::Continue))
@@ -239,13 +240,25 @@ pub fn try_run_builtin(
             Ok(Some(BuiltinResult::Continue))
         }
         "fg" => {
-            let spec = argv.get(1).map(|s| s.as_str()).unwrap_or("%1");
-            jobs.fg(spec)?;
+            let spec = match argv.get(1) {
+                Some(s) => s.clone(),
+                None => match jobs.current_job() {
+                    Some(s) => s,
+                    None => bail!("fg: no current job"),
+                },
+            };
+            jobs.fg(&spec)?;
             Ok(Some(BuiltinResult::Continue))
         }
         "bg" => {
-            let spec = argv.get(1).map(|s| s.as_str()).unwrap_or("%1");
-            jobs.bg(spec)?;
+            let spec = match argv.get(1) {
+                Some(s) => s.clone(),
+                None => match jobs.current_job() {
+                    Some(s) => s,
+                    None => bail!("bg: no current job"),
+                },
+            };
+            jobs.bg(&spec)?;
             Ok(Some(BuiltinResult::Continue))
         }
 
