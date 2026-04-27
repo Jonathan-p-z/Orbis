@@ -10,7 +10,6 @@ fn tokenize(line: &str) -> anyhow::Result<Vec<String>> {
     let base = shell_words::split(line)?;
     let mut out = Vec::new();
     for t in base {
-        // char-by-char split — handles ls|wc and grep foo>out.txt without spaces
         let mut cur = String::new();
         for ch in t.chars() {
             if matches!(ch, '|' | '<' | '>' | '&') {

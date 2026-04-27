@@ -5,9 +5,9 @@ pub enum RedirectTarget {
 
 #[derive(Debug, Clone, Copy)]
 pub enum RedirectMode {
-    Read,         // <
-    WriteTrunc,   // >
-    WriteAppend,  // >>
+    Read,
+    WriteTrunc,
+    WriteAppend,
 }
 
 #[derive(Debug, Clone, Copy)]
